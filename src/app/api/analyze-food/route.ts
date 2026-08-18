@@ -94,7 +94,7 @@ Units: calories in kcal, macronutrients in grams, sodium/minerals in mg, vitamin
     let result;
     if (image) {
       result = await client.chat.completions.createVision({
-        model: 'glm-4v-flash',
+        model: internal ? 'glm-4v-flash' : 'glm-4.6v-flash',
         messages: [
           {
             role: 'user',
@@ -108,7 +108,7 @@ Units: calories in kcal, macronutrients in grams, sodium/minerals in mg, vitamin
       });
     } else {
       result = await client.chat.completions.create({
-        model: 'glm-4-flash',
+        model: internal ? 'glm-4-flash' : 'glm-4.7-flash',
         messages: [{ role: 'user', content: prompt }],
         thinking: { type: 'enabled' }
       });
