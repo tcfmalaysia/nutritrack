@@ -1,0 +1,54 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model MealEntry {
+  id          String   @id @default(cuid())
+  date        String   // YYYY-MM-DD format for easy grouping
+  mealType    String   // breakfast, lunch, dinner, snack
+  foodName    String
+  description String?
+  imageUrl    String?  // base64 or URL of the food photo
+  calories    Float    @default(0)
+  protein     Float    @default(0)
+  carbs       Float    @default(0)
+  fat         Float    @default(0)
+  fiber       Float    @default(0)
+  sugar       Float    @default(0)
+  sodium      Float    @default(0)
+  // Minerals
+  calcium     Float    @default(0)  // mg
+  iron        Float    @default(0)  // mg
+  magnesium   Float    @default(0)  // mg
+  potassium   Float    @default(0)  // mg
+  zinc        Float    @default(0)  // mg
+  phosphorus  Float    @default(0)  // mg
+  // Vitamins
+  vitaminA    Float    @default(0)  // mcg
+  vitaminC    Float    @default(0)  // mg
+  vitaminD    Float    @default(0)  // mcg
+  vitaminB12  Float    @default(0)  // mcg
+  // Metadata
+  servingSize String?  // e.g. "1 cup", "200g"
+  confidence  String   @default("medium") // high, medium, low
+  aiNotes     String?  // AI reasoning notes
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model DailyGoal {
+  id        String   @id @default(cuid())
+  date      String   @unique // YYYY-MM-DD
+  calories  Float    @default(2000)
+  protein   Float    @default(50)
+  carbs     Float    @default(250)
+  fat       Float    @default(65)
+  fiber     Float    @default(25)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}

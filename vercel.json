@@ -1,0 +1,6 @@
+{
+  "buildCommand": "next build",
+  "installCommand": "bun install",
+  "framework": "nextjs",
+  "regions": ["sin1"]
+}
