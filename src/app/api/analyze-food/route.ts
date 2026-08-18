@@ -1,30 +1,43 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-// Helper to create ZAI client - works in both sandbox and Vercel
-async function createZAIClient() {
-  const ZAI = (await import('z-ai-web-dev-sdk')).default;
+// Read AI API config from environment variables
+// For Vercel: use Z AI public API (https://api.z.ai/api/paas/v4)
+// For sandbox: use internal API (https://internal-api.z.ai/v1)
+const getAIConfig = () => {
+  const apiKey = process.env.ZAI_API_KEY;
+  const baseUrl = process.env.ZAI_BASE_URL || 'https://api.z.ai/api/paas/v4';
 
-  // Try the default config file approach first (works in sandbox)
-  try {
-    return await ZAI.create();
-  } catch {
-    // Fallback: use environment variables (for Vercel deployment)
-    const baseUrl = process.env.ZAI_BASE_URL;
-    const apiKey = process.env.ZAI_API_KEY;
-    const token = process.env.ZAI_TOKEN;
-    const chatId = process.env.ZAI_CHAT_ID;
-    const userId = process.env.ZAI_USER_ID;
-
-    if (!baseUrl || !apiKey) {
-      throw new Error(
-        'AI service not configured. Set ZAI_BASE_URL and ZAI_API_KEY environment variables.'
-      );
-    }
-
-    // Instantiate ZAI directly with config (constructor is public)
-    return new ZAI({ baseUrl, apiKey, chatId, token, userId });
+  if (!apiKey) {
+    throw new Error(
+      'AI service not configured. Set ZAI_API_KEY env var. Get a key at z.ai > Profile > API Keys.'
+    );
   }
-}
+
+  const token = process.env.ZAI_TOKEN;
+  const chatId = process.env.ZAI_CHAT_ID;
+  const userId = process.env.ZAI_USER_ID;
+
+  return { baseUrl, apiKey, token, chatId, userId };
+};
+
+// Build headers for Z AI API requests
+const buildHeaders = (config: ReturnType<typeof getAIConfig>) => {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${config.apiKey}`,
+  };
+
+  if (config.token) {
+    headers['X-Z-AI-From'] = 'Z';
+    headers['X-Token'] = config.token;
+    if (config.chatId) headers['X-Chat-Id'] = config.chatId;
+    if (config.userId) headers['X-User-Id'] = config.userId;
+  }
+
+  return headers;
+};
+
+const isInternalAPI = (baseUrl: string) => baseUrl.includes('internal-api');
 
 export async function POST(req: NextRequest) {
   try {
@@ -38,12 +51,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Improved prompt with chain-of-thought reasoning for better accuracy
     const prompt = `You are a certified nutritionist and food scientist with expertise in accurate nutritional analysis.
 
 TASK: Analyze the following food and provide a comprehensive nutritional breakdown.
 
-${description ? `FOOD DESCRIPTION: ${description}` : 'FOOD: Analyze the food visible in the provided image.'}
+ ${description ? `FOOD DESCRIPTION: ${description}` : 'FOOD: Analyze the food visible in the provided image.'}
 
 ANALYSIS APPROACH (think step by step):
 1. IDENTIFY: What specific food(s) are present? List each component separately.
@@ -51,7 +63,7 @@ ANALYSIS APPROACH (think step by step):
 3. CALCULATE: For each component, calculate nutrition per the estimated portion using USDA food database reference values.
 4. SUM: Add up all components to get totals.
 5. CONFIDENCE: Rate your confidence as "high" (common food, clear portion), "medium" (food identified but portion uncertain), or "low" (uncertain identification or portion).
-6. NOTES: Briefly explain your reasoning — what assumptions did you make about portion sizes or preparation?
+6. NOTES: Briefly explain your reasoning - what assumptions did you make about portion sizes or preparation?
 
 IMPORTANT RULES:
 - Use realistic USDA-based values, not generic estimates
@@ -88,36 +100,67 @@ Respond ONLY with valid JSON (no markdown, no code fences, no extra text):
 
 Units: calories in kcal, macronutrients in grams, sodium/minerals in mg, vitamins in mcg (except vitamin C in mg).`;
 
-    // Create ZAI client (works in sandbox or Vercel)
-    const client = await createZAIClient();
+    const config = getAIConfig();
+    const headers = buildHeaders(config);
+    const internal = isInternalAPI(config.baseUrl);
 
-    let result;
+    let result: any;
     if (image) {
-      result = await client.chat.completions.createVision({
+      const url = internal
+        ? `${config.baseUrl}/chat/completions/vision`
+        : `${config.baseUrl}/chat/completions`;
+
+      const requestBody: any = {
         model: 'glm-4v-flash',
-        messages: [
-          {
-            role: 'user',
-            content: [
-              { type: 'image_url', image_url: { url: image } },
-              { type: 'text', text: prompt }
-            ]
-          }
-        ],
-        thinking: { type: 'enabled' }
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'image_url', image_url: { url: image } },
+            { type: 'text', text: prompt }
+          ]
+        }],
+      };
+      if (internal) {
+        requestBody.thinking = { type: 'enabled' };
+      }
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(requestBody),
       });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Vision API failed (${response.status}): ${errorText}`);
+      }
+      result = await response.json();
     } else {
-      result = await client.chat.completions.create({
+      const url = `${config.baseUrl}/chat/completions`;
+
+      const requestBody: any = {
         model: 'glm-4-flash',
         messages: [{ role: 'user', content: prompt }],
-        thinking: { type: 'enabled' }
+      };
+      if (internal) {
+        requestBody.thinking = { type: 'enabled' };
+      }
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(requestBody),
       });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Chat API failed (${response.status}): ${errorText}`);
+      }
+      result = await response.json();
     }
 
-    // Parse the response
     const responseText = result.choices?.[0]?.message?.content || '';
 
-    // Try to extract JSON from the response
     let nutritionData;
     try {
       nutritionData = JSON.parse(responseText);
@@ -138,7 +181,6 @@ Units: calories in kcal, macronutrients in grams, sodium/minerals in mg, vitamin
       }
     }
 
-    // Validate and sanitize
     const sanitized = {
       foodName: String(nutritionData.foodName || 'Unknown Food'),
       servingSize: String(nutritionData.servingSize || '1 serving'),
