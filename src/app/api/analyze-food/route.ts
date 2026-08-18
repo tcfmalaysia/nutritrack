@@ -1,5 +1,31 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+// Helper to create ZAI client - works in both sandbox and Vercel
+async function createZAIClient() {
+  const ZAI = (await import('z-ai-web-dev-sdk')).default;
+
+  // Try the default config file approach first (works in sandbox)
+  try {
+    return await ZAI.create();
+  } catch {
+    // Fallback: use environment variables (for Vercel deployment)
+    const baseUrl = process.env.ZAI_BASE_URL;
+    const apiKey = process.env.ZAI_API_KEY;
+    const token = process.env.ZAI_TOKEN;
+    const chatId = process.env.ZAI_CHAT_ID;
+    const userId = process.env.ZAI_USER_ID;
+
+    if (!baseUrl || !apiKey) {
+      throw new Error(
+        'AI service not configured. Set ZAI_BASE_URL and ZAI_API_KEY environment variables.'
+      );
+    }
+
+    // Instantiate ZAI directly with config (constructor is public)
+    return new ZAI({ baseUrl, apiKey, chatId, token, userId });
+  }
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -62,13 +88,11 @@ Respond ONLY with valid JSON (no markdown, no code fences, no extra text):
 
 Units: calories in kcal, macronutrients in grams, sodium/minerals in mg, vitamins in mcg (except vitamin C in mg).`;
 
-    // Use z-ai-web-dev-sdk via the ZAI class
-    const ZAI = (await import('z-ai-web-dev-sdk')).default;
-    const client = await ZAI.create();
+    // Create ZAI client (works in sandbox or Vercel)
+    const client = await createZAIClient();
 
     let result;
     if (image) {
-      // Analyze with image using vision API - include detailed image analysis instructions
       result = await client.chat.completions.createVision({
         model: 'glm-4v-flash',
         messages: [
@@ -83,7 +107,6 @@ Units: calories in kcal, macronutrients in grams, sodium/minerals in mg, vitamin
         thinking: { type: 'enabled' }
       });
     } else {
-      // Text-only analysis with thinking enabled
       result = await client.chat.completions.create({
         model: 'glm-4-flash',
         messages: [{ role: 'user', content: prompt }],
@@ -93,7 +116,7 @@ Units: calories in kcal, macronutrients in grams, sodium/minerals in mg, vitamin
 
     // Parse the response
     const responseText = result.choices?.[0]?.message?.content || '';
-    
+
     // Try to extract JSON from the response
     let nutritionData;
     try {
@@ -115,7 +138,7 @@ Units: calories in kcal, macronutrients in grams, sodium/minerals in mg, vitamin
       }
     }
 
-    // Validate and sanitize - with all new fields
+    // Validate and sanitize
     const sanitized = {
       foodName: String(nutritionData.foodName || 'Unknown Food'),
       servingSize: String(nutritionData.servingSize || '1 serving'),
@@ -126,19 +149,16 @@ Units: calories in kcal, macronutrients in grams, sodium/minerals in mg, vitamin
       fiber: Number(nutritionData.fiber) || 0,
       sugar: Number(nutritionData.sugar) || 0,
       sodium: Number(nutritionData.sodium) || 0,
-      // Minerals
       calcium: Number(nutritionData.calcium) || 0,
       iron: Number(nutritionData.iron) || 0,
       magnesium: Number(nutritionData.magnesium) || 0,
       potassium: Number(nutritionData.potassium) || 0,
       zinc: Number(nutritionData.zinc) || 0,
       phosphorus: Number(nutritionData.phosphorus) || 0,
-      // Vitamins
       vitaminA: Number(nutritionData.vitaminA) || 0,
       vitaminC: Number(nutritionData.vitaminC) || 0,
       vitaminD: Number(nutritionData.vitaminD) || 0,
       vitaminB12: Number(nutritionData.vitaminB12) || 0,
-      // Metadata
       confidence: String(nutritionData.confidence || 'medium'),
       notes: String(nutritionData.notes || ''),
     };
