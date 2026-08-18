@@ -111,7 +111,7 @@ Units: calories in kcal, macronutrients in grams, sodium/minerals in mg, vitamin
         : `${config.baseUrl}/chat/completions`;
 
       const requestBody: any = {
-        model: internal ? 'glm-4v-flash' : 'glm-4.7-flash',
+        model: internal ? 'glm-4v-flash' : 'glm-4.6v-flashx',
         messages: [{
           role: 'user',
           content: [
@@ -139,7 +139,7 @@ Units: calories in kcal, macronutrients in grams, sodium/minerals in mg, vitamin
       const url = `${config.baseUrl}/chat/completions`;
 
       const requestBody: any = {
-        model: internal ? 'glm-4-flash' : 'glm-4.7-flash',
+        model: internal ? 'glm-4-flash' : 'glm-4.7-flashx',
         messages: [{ role: 'user', content: prompt }],
       };
       if (internal) {
