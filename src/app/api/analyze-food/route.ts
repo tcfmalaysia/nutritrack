@@ -1,172 +1,61 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-// Helper to create ZAI client - works in both sandbox and Vercel
-async function createZAIClient() {
-  const ZAI = (await import('z-ai-web-dev-sdk')).default;
-
-  // Try the default config file approach first (works in sandbox)
-  try {
-    return await ZAI.create();
-  } catch {
-    // Fallback: use environment variables (for Vercel deployment)
-    const baseUrl = process.env.ZAI_BASE_URL || 'https://api.z.ai/api/paas/v4';
-    const apiKey = process.env.ZAI_API_KEY;
-    const token = process.env.ZAI_TOKEN;
-    const chatId = process.env.ZAI_CHAT_ID;
-    const userId = process.env.ZAI_USER_ID;
-
-    if (!baseUrl || !apiKey) {
-      throw new Error(
-        'AI service not configured. Set ZAI_BASE_URL and ZAI_API_KEY environment variables.'
-      );
-    }
-
-    // Instantiate ZAI directly with config (constructor is public)
-    return new ZAI({ baseUrl, apiKey, chatId, token, userId });
+const getAIConfig = () => {
+  const apiKey = process.env.ZAI_API_KEY;
+  const baseUrl = process.env.ZAI_BASE_URL || 'https://api.z.ai/api/paas/v4';
+  if (!apiKey) {
+    throw new Error('AI not configured. Set ZAI_API_KEY in Vercel env vars.');
   }
+  return { baseUrl, apiKey, token: process.env.ZAI_TOKEN, chatId: process.env.ZAI_CHAT_ID, userId: process.env.ZAI_USER_ID };
+};
+
+const buildHeaders = (config: ReturnType<typeof getAIConfig>) => {
+  const h: Record<string, string> = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.apiKey}` };
+  if (config.token) { h['X-Z-AI-From'] = 'Z'; h['X-Token'] = config.token; if (config.chatId) h['X-Chat-Id'] = config.chatId; if (config.userId) h['X-User-Id'] = config.userId; }
+  return h;
+};
+
+async function fetchWithRetry(url: string, options: RequestInit, maxRetries = 3): Promise<Response> {
+  for (let i = 0; i <= maxRetries; i++) {
+    const r = await fetch(url, options);
+    if (r.status === 429 && i < maxRetries) { await new Promise(res => setTimeout(res, Math.pow(2, i + 1) * 1000)); continue; }
+    return r;
+  }
+  throw new Error('Max retries exceeded');
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
-    const { image, description } = body;
+    const { image, description } = await req.json();
+    if (!image && !description) return NextResponse.json({ error: 'Provide a photo or description' }, { status: 400 });
 
-    if (!image && !description) {
-      return NextResponse.json(
-        { error: 'Please provide either a food photo or a description' },
-        { status: 400 }
-      );
-    }
+    const prompt = `You are a certified nutritionist. Analyze this food and return ONLY valid JSON (no markdown fences):
+{"foodName":"name","servingSize":"size","calories":0,"protein":0,"carbs":0,"fat":0,"fiber":0,"sugar":0,"sodium":0,"calcium":0,"iron":0,"magnesium":0,"potassium":0,"zinc":0,"phosphorus":0,"vitaminA":0,"vitaminC":0,"vitaminD":0,"vitaminB12":0,"confidence":"high/medium/low","notes":"reasoning"}
+Units: kcal, grams, mg for minerals, mcg for vitamins (except C in mg). Use USDA values. Think step by step.
+ ${description ? `FOOD DESCRIPTION: ${description}` : 'FOOD: Analyze the food in the image.'}`;
 
-    // Improved prompt with chain-of-thought reasoning for better accuracy
-    const prompt = `You are a certified nutritionist and food scientist with expertise in accurate nutritional analysis.
+    const config = getAIConfig();
+    const headers = buildHeaders(config);
+    const internal = config.baseUrl.includes('internal-api');
+    let result: any;
 
-TASK: Analyze the following food and provide a comprehensive nutritional breakdown.
-
-${description ? `FOOD DESCRIPTION: ${description}` : 'FOOD: Analyze the food visible in the provided image.'}
-
-ANALYSIS APPROACH (think step by step):
-1. IDENTIFY: What specific food(s) are present? List each component separately.
-2. ESTIMATE PORTION: For each component, estimate the serving size in grams based on the description or visual cues. Use standard reference portions when uncertain.
-3. CALCULATE: For each component, calculate nutrition per the estimated portion using USDA food database reference values.
-4. SUM: Add up all components to get totals.
-5. CONFIDENCE: Rate your confidence as "high" (common food, clear portion), "medium" (food identified but portion uncertain), or "low" (uncertain identification or portion).
-6. NOTES: Briefly explain your reasoning — what assumptions did you make about portion sizes or preparation?
-
-IMPORTANT RULES:
-- Use realistic USDA-based values, not generic estimates
-- If multiple foods are present, calculate each separately then sum
-- For mixed dishes, break into ingredients and estimate each
-- If portion size is unclear, assume a STANDARD restaurant portion and note this
-- Round all values to 1 decimal place
-- For minerals and vitamins, use realistic values based on the food type (e.g., dairy is high in calcium, meat is high in iron, leafy greens are high in magnesium and vitamin K)
-
-Respond ONLY with valid JSON (no markdown, no code fences, no extra text):
-{
-  "foodName": "descriptive name of the complete meal/food",
-  "servingSize": "total estimated serving with breakdown",
-  "calories": number,
-  "protein": number,
-  "carbs": number,
-  "fat": number,
-  "fiber": number,
-  "sugar": number,
-  "sodium": number,
-  "calcium": number,
-  "iron": number,
-  "magnesium": number,
-  "potassium": number,
-  "zinc": number,
-  "phosphorus": number,
-  "vitaminA": number,
-  "vitaminC": number,
-  "vitaminD": number,
-  "vitaminB12": number,
-  "confidence": "high" or "medium" or "low",
-  "notes": "your reasoning: what foods you identified, portion assumptions, preparation assumptions"
-}
-
-Units: calories in kcal, macronutrients in grams, sodium/minerals in mg, vitamins in mcg (except vitamin C in mg).`;
-
-    // Create ZAI client (works in sandbox or Vercel)
-    const client = await createZAIClient();
-
-    let result;
     if (image) {
-      result = await client.chat.completions.createVision({
-        model: internal ? 'glm-4v-flash' : 'glm-4.6v-flash',
-        messages: [
-          {
-            role: 'user',
-            content: [
-              { type: 'image_url', image_url: { url: image } },
-              { type: 'text', text: prompt }
-            ]
-          }
-        ],
-        thinking: { type: 'enabled' }
-      });
+      const url = `${config.baseUrl}/chat/completions`;
+      const res = await fetchWithRetry(url, { method: 'POST', headers, body: JSON.stringify({ model: internal ? 'glm-4v-flash' : 'glm-4.6v-flash', messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: image } }, { type: 'text', text: prompt }] }] }) });
+      if (!res.ok) { const t = await res.text(); throw new Error(res.status === 429 ? 'AI busy, try again.' : `Vision failed (${res.status}): ${t}`); }
+      result = await res.json();
     } else {
-      result = await client.chat.completions.create({
-        model: internal ? 'glm-4-flash' : 'glm-4.7-flash',
-        messages: [{ role: 'user', content: prompt }],
-        thinking: { type: 'enabled' }
-      });
+      const url = `${config.baseUrl}/chat/completions`;
+      const res = await fetchWithRetry(url, { method: 'POST', headers, body: JSON.stringify({ model: internal ? 'glm-4-flash' : 'glm-4.7-flash', messages: [{ role: 'user', content: prompt }] }) });
+      if (!res.ok) { const t = await res.text(); throw new Error(res.status === 429 ? 'AI busy, try again.' : `Chat failed (${res.status}): ${t}`); }
+      result = await res.json();
     }
 
-    // Parse the response
-    const responseText = result.choices?.[0]?.message?.content || '';
+    const text = result.choices?.[0]?.message?.content || '';
+    let data: any;
+    try { data = JSON.parse(text); } catch { const m = text.match(/\{[\s\S]*\}/); if (m) data = JSON.parse(m[0]); else return NextResponse.json({ error: 'Parse failed', raw: text }, { status: 500 }); }
 
-    // Try to extract JSON from the response
-    let nutritionData;
-    try {
-      nutritionData = JSON.parse(responseText);
-    } catch {
-      const jsonMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)```/);
-      if (jsonMatch) {
-        nutritionData = JSON.parse(jsonMatch[1].trim());
-      } else {
-        const objectMatch = responseText.match(/\{[\s\S]*\}/);
-        if (objectMatch) {
-          nutritionData = JSON.parse(objectMatch[0]);
-        } else {
-          return NextResponse.json(
-            { error: 'Could not parse nutrition data from AI response', raw: responseText },
-            { status: 500 }
-          );
-        }
-      }
-    }
-
-    // Validate and sanitize
-    const sanitized = {
-      foodName: String(nutritionData.foodName || 'Unknown Food'),
-      servingSize: String(nutritionData.servingSize || '1 serving'),
-      calories: Number(nutritionData.calories) || 0,
-      protein: Number(nutritionData.protein) || 0,
-      carbs: Number(nutritionData.carbs) || 0,
-      fat: Number(nutritionData.fat) || 0,
-      fiber: Number(nutritionData.fiber) || 0,
-      sugar: Number(nutritionData.sugar) || 0,
-      sodium: Number(nutritionData.sodium) || 0,
-      calcium: Number(nutritionData.calcium) || 0,
-      iron: Number(nutritionData.iron) || 0,
-      magnesium: Number(nutritionData.magnesium) || 0,
-      potassium: Number(nutritionData.potassium) || 0,
-      zinc: Number(nutritionData.zinc) || 0,
-      phosphorus: Number(nutritionData.phosphorus) || 0,
-      vitaminA: Number(nutritionData.vitaminA) || 0,
-      vitaminC: Number(nutritionData.vitaminC) || 0,
-      vitaminD: Number(nutritionData.vitaminD) || 0,
-      vitaminB12: Number(nutritionData.vitaminB12) || 0,
-      confidence: String(nutritionData.confidence || 'medium'),
-      notes: String(nutritionData.notes || ''),
-    };
-
-    return NextResponse.json({ success: true, data: sanitized });
-  } catch (error: unknown) {
-    console.error('Food analysis error:', error);
-    const message = error instanceof Error ? error.message : 'Failed to analyze food';
-    return NextResponse.json({ error: message }, { status: 500 });
-  }
+    const s = { foodName: String(data.foodName||'Unknown'), servingSize: String(data.servingSize||'1 serving'), calories: Number(data.calories)||0, protein: Number(data.protein)||0, carbs: Number(data.carbs)||0, fat: Number(data.fat)||0, fiber: Number(data.fiber)||0, sugar: Number(data.sugar)||0, sodium: Number(data.sodium)||0, calcium: Number(data.calcium)||0, iron: Number(data.iron)||0, magnesium: Number(data.magnesium)||0, potassium: Number(data.potassium)||0, zinc: Number(data.zinc)||0, phosphorus: Number(data.phosphorus)||0, vitaminA: Number(data.vitaminA)||0, vitaminC: Number(data.vitaminC)||0, vitaminD: Number(data.vitaminD)||0, vitaminB12: Number(data.vitaminB12)||0, confidence: String(data.confidence||'medium'), notes: String(data.notes||'') };
+    return NextResponse.json({ success: true, data: s });
+  } catch (e: unknown) { const msg = e instanceof Error ? e.message : 'Failed'; return NextResponse.json({ error: msg }, { status: 500 }); }
 }
