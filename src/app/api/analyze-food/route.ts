@@ -9,7 +9,7 @@ async function createZAIClient() {
     return await ZAI.create();
   } catch {
     // Fallback: use environment variables (for Vercel deployment)
-    const baseUrl = process.env.ZAI_BASE_URL;
+    const baseUrl = process.env.ZAI_BASE_URL || 'https://api.z.ai/api/paas/v4';
     const apiKey = process.env.ZAI_API_KEY;
     const token = process.env.ZAI_TOKEN;
     const chatId = process.env.ZAI_CHAT_ID;
